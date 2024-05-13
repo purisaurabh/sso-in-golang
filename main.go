@@ -92,7 +92,7 @@ func PingHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func ProfileHandler(w http.ResponseWriter, r *http.Request) {
-	// Get the user information from the cookie
+
 	cookie, err := r.Cookie("u")
 	if err != nil {
 		http.Error(w, "Could not get user cookie", http.StatusInternalServerError)
@@ -109,16 +109,12 @@ func ProfileHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Println("User Information in profile handler : ", userInfo)
 
-	// Parse the user information into a Profile object
 	var profile UserInfo
 	err = json.Unmarshal([]byte(userInfo), &profile)
 	if err != nil {
 		http.Error(w, "Could not parse user information", http.StatusInternalServerError)
 		return
 	}
-
-	fmt.Println("Profile: ", profile)
-	fmt.Println("Profile Name: ", profile.Name)
 
 	tmpl, err := template.ParseGlob("web/template/*")
 	if err != nil {
@@ -127,7 +123,6 @@ func ProfileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pass the profile data to the template
 	tmpl.ExecuteTemplate(w, "profile.html", map[string]interface{}{"profile": profile})
 }
 
@@ -148,7 +143,6 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save state value in session
 	session.Values["state"] = state
 
 	err = sessions.Save(r, w)
@@ -164,24 +158,19 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("You are logged in")
 
-	// TODO : to validate the state
 	session, ok := r.Context().Value("session").(*sessions.Session)
 	if !ok {
 		http.Error(w, "could not get session", http.StatusInternalServerError)
 		return
 	}
 
-	// Get state value from session
 	sessionState, ok := session.Values["state"].(string)
 	if !ok {
 		http.Error(w, "could not get state from session", http.StatusInternalServerError)
 		return
 	}
 
-	// Get state parameter from URL
 	urlState := r.URL.Query().Get("state")
-
-	// Compare state values
 	if sessionState != urlState {
 		http.Error(w, "invalid state param", http.StatusInternalServerError)
 		return
@@ -207,11 +196,8 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// get the user information
-	// Create a new HTTP client using the OAuth2 token
 	client := oauthConfig.Client(r.Context(), token)
 
-	// Send a GET request to the Auth0 userinfo endpoint
 	resp, err := client.Get(os.Getenv("USER_INFO"))
 	if err != nil {
 		http.Error(w, "could not fetch user information", http.StatusInternalServerError)
@@ -219,7 +205,6 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Read and parse the response body
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		http.Error(w, "could not parse response body", http.StatusInternalServerError)
@@ -230,12 +215,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Access Token: ", token.AccessToken)
 	fmt.Println("Access Token: ", token.RefreshToken)
 
-	// TODO : cookie should be ecrypted
-	// store the user information and the access token in the cookie
-	// before storing in the  cookie it should be encrypted
 	userInfo := url.QueryEscape(string(b))
-
-	// fmt.Println("User Info: ", userInfo)
 
 	userCookie := &http.Cookie{
 		Name:     "u",
@@ -247,10 +227,8 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		Secure:   true,
 	}
 
-	// Set the user information cookie
 	http.SetCookie(w, userCookie)
 
-	// Create a new cookie for the access token
 	tokenCookie := &http.Cookie{
 		Name:     "at",
 		Value:    token.AccessToken,
@@ -261,14 +239,13 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		Secure:   true,
 	}
 
-	// Set the access token cookie
 	http.SetCookie(w, tokenCookie)
 
 	http.Redirect(w, r, "/profile", http.StatusTemporaryRedirect)
 }
 
 func logoutHandler(w http.ResponseWriter, r *http.Request) {
-	// Retrieve the access token from the "at" cookie
+
 	accessTokenCookie, err := r.Cookie("at")
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -277,19 +254,16 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	accessToken := accessTokenCookie.Value
 
 	// Delete all the cookies and session values
-	// Set cookie timestamp as negative
 	http.SetCookie(w, &http.Cookie{Name: "at", Value: "", MaxAge: -1, Path: "/", Secure: false, HttpOnly: true})
 	http.SetCookie(w, &http.Cookie{Name: "u", Value: "", MaxAge: -1, Path: "/", Secure: false, HttpOnly: true})
 	http.SetCookie(w, &http.Cookie{Name: "state", Value: "", MaxAge: -1, Path: "/", Secure: false, HttpOnly: true})
 
-	// Call Google's token revocation endpoint to clear session and tokens from Google's side
 	_, err = http.PostForm("https://oauth2.googleapis.com/revoke", url.Values{"token": {accessToken}})
 	if err != nil {
 		http.Error(w, "could not logout", http.StatusInternalServerError)
 		return
 	}
 
-	// Redirect to Google's logout endpoint
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -300,7 +274,7 @@ func isAuthenticated(next http.Handler) http.Handler {
 		// Get the access token cookie
 		accessTokenCookie, err := r.Cookie("at")
 		if err != nil || accessTokenCookie.Value == "" {
-			// Cookie does not exist or is empty, hence redirect user to home page or login page
+			// Cookie does not exist or is empty, hence redirect user to home page
 			http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 			return
 		}
