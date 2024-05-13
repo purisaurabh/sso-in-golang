@@ -34,7 +34,7 @@ type UserInfo struct {
 }
 
 func NewOauth2Config() (*oauth2.Config, error) {
-	provider, err := oidc.NewProvider(context.Background(), "https://accounts.google.com")
+	provider, err := oidc.NewProvider(context.Background(), os.Getenv("AUTH_DOMAIN"))
 	if err != nil {
 		return nil, fmt.Errorf("could not create new provider: %v", err)
 	}
@@ -66,9 +66,10 @@ func main() {
 	}
 
 	r := mux.NewRouter()
+	// adding the middleware to the router r
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			session, _ := store.Get(r, "auth-sessions")
+			session, _ := store.Get(r, "state")
 			ctx := context.WithValue(r.Context(), "session", session)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -90,17 +91,6 @@ func PingHandler(w http.ResponseWriter, r *http.Request) {
 	tmpl.ExecuteTemplate(w, "home.html", nil)
 }
 
-// func ProfileHandler(w http.ResponseWriter, r *http.Request) {
-// 	tmpl, err := template.ParseGlob("web/template/*")
-// 	if err != nil {
-
-// 		fmt.Println("Error parsing template: ", err)
-// 		http.Error(w, err.Error(), http.StatusInternalServerError)
-// 		return
-// 	}
-// 	tmpl.ExecuteTemplate(w, "profile.html", nil)
-// }
-
 func ProfileHandler(w http.ResponseWriter, r *http.Request) {
 	// Get the user information from the cookie
 	cookie, err := r.Cookie("u")
@@ -117,7 +107,7 @@ func ProfileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Println("User Information : ", userInfo)
+	fmt.Println("User Information in profile handler : ", userInfo)
 
 	// Parse the user information into a Profile object
 	var profile UserInfo
@@ -127,6 +117,9 @@ func ProfileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fmt.Println("Profile: ", profile)
+	fmt.Println("Profile Name: ", profile.Name)
+
 	tmpl, err := template.ParseGlob("web/template/*")
 	if err != nil {
 		fmt.Println("Error parsing template: ", err)
@@ -135,7 +128,7 @@ func ProfileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Pass the profile data to the template
-	tmpl.ExecuteTemplate(w, "profile.html", profile)
+	tmpl.ExecuteTemplate(w, "profile.html", map[string]interface{}{"profile": profile})
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +158,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOnline), http.StatusTemporaryRedirect)
 }
 
 func callbackHandler(w http.ResponseWriter, r *http.Request) {
@@ -197,10 +190,17 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	token, err := oauthConfig.Exchange(r.Context(), code)
 	if err != nil {
-
 		http.Error(w, "could not exchange oauth code", http.StatusInternalServerError)
 		return
 	}
+
+	id_token, ok := token.Extra("id_token").(string)
+	if !ok {
+		http.Error(w, "could not get id token", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Println("ID Token: ", id_token)
 
 	if !token.Valid() {
 		http.Error(w, "invalid access token", http.StatusInternalServerError)
@@ -212,7 +212,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	client := oauthConfig.Client(r.Context(), token)
 
 	// Send a GET request to the Auth0 userinfo endpoint
-	resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
+	resp, err := client.Get(os.Getenv("USER_INFO"))
 	if err != nil {
 		http.Error(w, "could not fetch user information", http.StatusInternalServerError)
 		return
@@ -228,6 +228,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Println("User Info: ", string(b))
 	fmt.Println("Access Token: ", token.AccessToken)
+	fmt.Println("Access Token: ", token.RefreshToken)
 
 	// TODO : cookie should be ecrypted
 	// store the user information and the access token in the cookie
@@ -266,68 +267,31 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/profile", http.StatusTemporaryRedirect)
 }
 
-// logout handler
 func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	// Retrieve the access token from the "at" cookie
+	accessTokenCookie, err := r.Cookie("at")
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	accessToken := accessTokenCookie.Value
+
 	// Delete all the cookies and session values
 	// Set cookie timestamp as negative
 	http.SetCookie(w, &http.Cookie{Name: "at", Value: "", MaxAge: -1, Path: "/", Secure: false, HttpOnly: true})
 	http.SetCookie(w, &http.Cookie{Name: "u", Value: "", MaxAge: -1, Path: "/", Secure: false, HttpOnly: true})
-	http.SetCookie(w, &http.Cookie{Name: "auth-sessions", Value: "", MaxAge: -1, Path: "/", Secure: false, HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: "state", Value: "", MaxAge: -1, Path: "/", Secure: false, HttpOnly: true})
 
-	// Call auth0 logout endpoint to clear session and tokens from auth0 side
-	logoutURL, err := url.Parse("https://" + os.Getenv("AUTH0_DOMAIN") + "/v2/logout")
+	// Call Google's token revocation endpoint to clear session and tokens from Google's side
+	_, err = http.PostForm("https://oauth2.googleapis.com/revoke", url.Values{"token": {accessToken}})
 	if err != nil {
 		http.Error(w, "could not logout", http.StatusInternalServerError)
 		return
 	}
 
-	// Check if request was performed via http or https
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-
-	// Redirecting user back to homepage
-	redirectionURL, err := url.Parse(scheme + "://" + r.Host)
-	if err != nil {
-		http.Error(w, "could not parse URL", http.StatusInternalServerError)
-		return
-	}
-
-	// Add url params
-	parameters := url.Values{}
-	parameters.Add("returnTo", redirectionURL.String())
-	parameters.Add("client_id", os.Getenv("AUTH0_CLIENT_ID"))
-	logoutURL.RawQuery = parameters.Encode()
-
-	http.Redirect(w, r, logoutURL.String(), http.StatusTemporaryRedirect)
+	// Redirect to Google's logout endpoint
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
-
-// func logoutHandler(w http.ResponseWriter, r *http.Request) {
-//     // Retrieve the access token from the "at" cookie
-//     accessTokenCookie, err := r.Cookie("at")
-//     if err != nil {
-//         http.Error(w, "Unauthorized", http.StatusUnauthorized)
-//         return
-//     }
-//     accessToken := accessTokenCookie.Value
-
-//     // Delete all the cookies and session values
-//     // Set cookie timestamp as negative
-//     http.SetCookie(w, &http.Cookie{Name: "at", Value: "", MaxAge: -1, Path: "/", Secure: false, HttpOnly: true})
-//     http.SetCookie(w, &http.Cookie{Name: "u", Value: "", MaxAge: -1, Path: "/", Secure: false, HttpOnly: true})
-//     http.SetCookie(w, &http.Cookie{Name: "auth-sessions", Value: "", MaxAge: -1, Path: "/", Secure: false, HttpOnly: true})
-
-//     // Call Google's token revocation endpoint to clear session and tokens from Google's side
-//     logoutURL, err := url.Parse("https://accounts.google.com/o/oauth2/revoke?token=" + accessToken)
-//     if err != nil {
-//         http.Error(w, "could not logout", http.StatusInternalServerError)
-//         return
-//     }
-
-//     // Redirecting user back to homepage
-//     http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
-// }
 
 // before redicted to profile router we have to check whether the user is authenticated or not
 
